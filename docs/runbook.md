@@ -50,7 +50,7 @@ logger "WAZUH_NTFY_TEST end-to-end"
 Restoring the VM from backup is the normal recovery. The data disk then starts empty or is reattached as it was.
 
 1. Create the VM with Debian, both disks (the second with the backup flag off) and the static address. Follow the new-host steps for the fleet: hardening, the SSH CA, the host certificate and the baseline.
-2. Format the second disk as ext4 with the label `wazuh-data`, add `LABEL=wazuh-data /srv/wazuh-data ext4 defaults,nofail 0 2` to `/etc/fstab`, mount it, and create the four folders with the owners and modes in [`design.md`](design.md#data-disk).
+2. Format the second disk as ext4 with the label `wazuh-data`, add `LABEL=wazuh-data /srv/wazuh-data ext4 defaults,nofail 0 2` to `/etc/fstab`, mount it, and create the five folders with the owners and modes in [`design.md`](design.md#data-disk).
 3. Add the Docker drop-in at `/etc/systemd/system/docker.service.d/wazuh-data.conf`:
    ```ini
    [Unit]

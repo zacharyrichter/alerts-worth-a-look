@@ -12,7 +12,7 @@ A single-node Wazuh stack that every host in the lab reports to: file integrity,
 
 **Secrets stay on the host.** The env files, the enrollment password and the notification token are not in Git. They sit on the host only, under `/opt/appdata/wazuh/`, and are covered by the VM backup.
 
-**Bulk data on its own disk, not backed up.** Alert history, indexes and the vulnerability feed are on a separate data disk on the node's NVMe, which the backup skips. All of it is rebuilt or downloaded again, so backing it up would cost storage for nothing. Agent registrations, certificates and config are on the system disk, which is backed up, so losing the data disk never means re-enrolling agents. See [backups-nobody-watches](https://github.com/zacharyrichter/backups-nobody-watches).
+**Bulk data on its own disk, not backed up.** Alert history, indexes, the vulnerability feed and the feed's download workspace are on a separate data disk on the node's NVMe, which the backup skips. All of it is rebuilt or downloaded again, so backing it up would cost storage for nothing. Agent registrations, certificates and config are on the system disk, which is backed up, so losing the data disk never means re-enrolling agents. See [backups-nobody-watches](https://github.com/zacharyrichter/backups-nobody-watches).
 
 **Docker won't start without the data disk.** The disk is mounted with `nofail`, so the VM still boots without it. A systemd drop-in makes Docker require the mount, so the containers can't start against empty folders on the system disk.
 
@@ -57,7 +57,7 @@ The bundled Python has no CA store, so the script loads `certifi` and falls back
 | indexer | none | `wazuh.indexer.yml` (single node) | env file; certificates and the security config |
 | dashboard | 443 | `opensearch_dashboards.yml` | env files; certificates and the dashboard config |
 
-The manager's own state (`etc`, including the agent registry and `local_rules.xml`, plus `queue`, `api/configuration` and Filebeat) is in Docker named volumes on the system disk. The indexer needs `vm.max_map_count=262144`.
+The manager's own state (`etc`, including the agent registry and `local_rules.xml`, plus `queue`, `api/configuration` and Filebeat) is in Docker named volumes on the system disk, except `queue/vd` and `queue/vd_updater`, which are bind-mounted from the data disk. The indexer needs `vm.max_map_count=262144`.
 
 ### Data disk
 
@@ -66,6 +66,7 @@ The manager's own state (`etc`, including the agent registry and `local_rules.xm
 | `indexer/` | indexer `/var/lib/wazuh-indexer` | 1000:1000, 0750 | Indexes (alerts, vulnerabilities, inventory) |
 | `manager-logs/` | manager `/var/ossec/logs` | 999:999, 0770 | `alerts/` (daily `ossec-alerts-DD.json.gz`), `integrations.log`, manager logs |
 | `manager-vd/` | manager `/var/ossec/queue/vd` | 0:999, 0660 | The vulnerability feed |
+| `manager-vd-updater/` | manager `/var/ossec/queue/vd_updater` | 0:0, 0755 | Content updater: feed downloads and offsets. Grows by several GB while a full snapshot downloads, then is cleaned up |
 | `manager-tmp/` | manager `/var/ossec/tmp` | 0:999, 1770 | Unpacking space for the feed |
 
 `queue/vd` is mounted, not `queue/vd/feed`. The vulnerability scanner deletes and recreates `feed` on start, which fails on a mount point ("Device or resource busy"), stops the scanner and leaves a large unpacked snapshot in `tmp`.
