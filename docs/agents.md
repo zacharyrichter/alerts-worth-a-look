@@ -5,7 +5,8 @@ How the lab's Wazuh agents are installed, grouped, upgraded and removed. The pla
 ## Layout
 
 - **Manager:** the Docker single-node stack on the Wazuh VM, `10.0.99.8`. Agents use the IP directly. The dashboard's hostname resolves to the management reverse proxy and nothing else.
-- **Playbook targets:** `proxmox:debian_fleet:backup:!bastion`. Each agent is installed at a pinned version (`wazuh_agent_version`) and held.
+- **Playbook targets:** `proxmox:debian_fleet:backup:!bastion`.
+- **Agents keep no Wazuh apt repository and no apt hold.** The repository and its signing key are added only for a fresh install (at the pinned `wazuh_agent_version`) and removed again in the same run, so apt and unattended-upgrades can never move an agent past the manager. All agent upgrades are pushed from the manager ([Upgrading](#upgrading)).
 - **Groups follow inventory groups:** `proxmox`, `debian_fleet` and `backup`, plus `default`, all set by the playbook at enrollment. The router is in `opnsense`. The Docker hosts are also in `docker-hosts`, assigned in the dashboard.
 - **Enrollment is password-only, on port 1515.** The password is in the password manager. The manager reads it from `/opt/appdata/wazuh/secrets/authd.pass` (`root:root`, mode `0600`) on the Wazuh VM, bind-mounted read-only to `/var/ossec/etc/authd.pass`, with `use_password yes` in `wazuh_manager.conf`.
 - **Agents keep no copy.** The playbook removes `/var/ossec/etc/authd.pass` after a confirmed connection.
@@ -21,7 +22,9 @@ ansible-playbook playbooks/wazuh-agent.yml -e ansible_user=admin \
   -e 'ansible_host={{ inventory_hostname }}-admin' -K [-l <hosts>]
 ```
 
-It prompts for sudo, then the enrollment password. Reruns are idempotent (`changed=0`). The final task waits up to a minute for `status='connected'`, and a few retries are normal on first enrollment.
+It prompts for sudo, then the enrollment password. The password is only used on a fresh install, so on hosts that already have the agent, press Enter. Reruns are idempotent (`changed=0`). The final task waits up to a minute for `status='connected'`, and a few retries are normal on first enrollment.
+
+`wazuh_agent_version` only applies to fresh installs and must not be newer than the manager. If it lags behind, a new agent installs at the older version and is then upgraded from the manager.
 
 Run `--check --diff` first on any change to the playbook, as with every playbook here.
 
@@ -29,7 +32,7 @@ Run `--check --diff` first on any change to the playbook, as with every playbook
 
 ### bastion (by hand)
 
-The management host reaches bastion only as the automation account, with no admin path, by design, because bastion holds the SSH CA. So bastion is excluded from the playbook and installed by hand with the same steps: the keyring, the checksum check of the repo key (stop if it doesn't print `OK`), the apt source, the pinned install with the same deployment variables, `apt-mark hold`, then enabling the service and removing `authd.pass`.
+The management host reaches bastion only as the automation account, with no admin path, by design, because bastion holds the SSH CA. So bastion is excluded from the playbook and installed by hand with the same steps: fetch the repo key and check its checksum (stop if it doesn't print `OK`), add the apt source, run the pinned install with the same deployment variables, and enable the service. Once the status shows `connected`, remove `authd.pass`, the apt source and the key. `apt-cache policy wazuh-agent` should then list only `/var/lib/dpkg/status`. bastion is upgraded from the manager like every other agent.
 
 ### The router (plugin)
 
@@ -46,7 +49,7 @@ The agent is the `os-wazuh-agent` plugin from the router's own repository, confi
 
 The last row is deliberate: no manager-driven root commands on the firewall. CrowdSec handles blocking. The plugin has no group field, so the agent is added to `opnsense` in the dashboard after enrollment. Clear the enrollment password field and apply once the agent is enrolled, and re-enter it only to re-enroll.
 
-The plugin's agent version follows router updates, not the pin. Before a router update, check that the version it brings is not newer than the manager's.
+The plugin's agent version follows router updates, so the router is never upgraded from the manager. Before a router update, check that the version it brings is not newer than the manager's.
 
 ### Docker hosts (`docker-hosts` group)
 
@@ -61,12 +64,22 @@ The enrollment password prompt still appears because prompts ignore tags. Press 
 
 ## Upgrading
 
-The manager's version must be equal to or newer than every agent's.
+The manager's version must be equal to or newer than every agent's. Agents are upgraded remotely by the manager (WPK packages sent over the agent connection). No SSH, Ansible or apt repository is involved. A WPK upgrade also clears any apt hold on the agent, which is why agents are not held.
 
 1. **Upgrade the manager first.** Merge the Renovate pull request, then pull and redeploy by hand, since the stack is critical. Confirm the dashboard and agents are healthy.
-2. **Bump `wazuh_agent_version`** in the playbook, commit, and run it across the fleet. The hold is lifted for the pinned install and set again.
-3. **bastion:** run `sudo apt-get install --allow-change-held-packages wazuh-agent=<new version>` and confirm it reconnects.
-4. **The router:** see above.
+2. **List the agents behind the manager,** on the Wazuh VM:
+   ```bash
+   sudo docker exec wazuh-manager /var/ossec/bin/agent_upgrade -l
+   ```
+3. **Upgrade them by ID,** always naming the manager's version (with its `v` prefix) and leaving out the router:
+   ```bash
+   sudo docker exec wazuh-manager /var/ossec/bin/agent_upgrade -a <ID> [<ID> ...] -v v<manager version>
+   ```
+   Test on one agent first if the release looks unusual. Disconnected agents are upgraded later, once they are back online.
+4. **Run `agent_upgrade -l` again.** Only the router, and any offline agent, should remain. Check that every upgraded agent shows Active in the dashboard.
+5. **The router:** see above.
+
+Each `docker exec` into the manager raises the level-10 Docker exec alert ([`sources.md`](sources.md)). That is expected during an upgrade.
 
 ## Rebuilt or retired hosts
 
@@ -78,4 +91,4 @@ Edit `/opt/appdata/wazuh/secrets/authd.pass` on the Wazuh VM and redeploy the st
 
 ## The repository signing key
 
-The agent's apt repository is trusted through one key, pinned by its sha256 in the playbook (`wazuh_key_sha256`). Its fingerprint is checked against Wazuh's documentation when the pin is set.
+The agent's apt repository is trusted through one key, pinned by its sha256 in the playbook (`wazuh_key_sha256`). It is only used for fresh installs, since agents keep no repository. Its fingerprint is checked against Wazuh's documentation when the pin is set.

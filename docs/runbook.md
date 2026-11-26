@@ -17,7 +17,7 @@ Make the change in the dashboard (rules: Server management → Rules; groups: Ag
 
 ## Update Wazuh
 
-Merge the grouped Renovate pull request, then deploy the `wazuh` stack by hand. The three images always move together. Agents are upgraded separately with the playbook ([`agents.md`](agents.md)), and kept at or below the manager's version.
+Merge the grouped Renovate pull request, then deploy the `wazuh` stack by hand. The three images always move together. Agents are upgraded separately, from the manager with `agent_upgrade` ([`agents.md`](agents.md)), and must never be newer than the manager.
 
 ## Test the alert path
 

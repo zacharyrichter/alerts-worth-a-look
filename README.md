@@ -33,7 +33,7 @@ agents ──▶ Wazuh manager ──▶ rules ──┬─ level 10+ ──▶ 
 | [`files/local_rules.xml`](files/local_rules.xml) | The custom rules |
 | [`files/agent-conf-default.xml`](files/agent-conf-default.xml) | The critical-file watch for the `default` agent group |
 | [`files/agent-conf-docker-hosts.xml`](files/agent-conf-docker-hosts.xml) | The Docker listener for the `docker-hosts` agent group |
-| [`files/wazuh-agent.yml`](files/wazuh-agent.yml) | The playbook that installs, pins and enrolls agents |
+| [`files/wazuh-agent.yml`](files/wazuh-agent.yml) | The playbook that installs and enrolls agents on a fresh host |
 
 ## Limits
 

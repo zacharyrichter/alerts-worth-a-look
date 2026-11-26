@@ -1,10 +1,15 @@
 ---
-# Install, pin and enroll the Wazuh agent on Debian/Proxmox hosts.
-# Run from the repo root:
+# Install and enroll the Wazuh agent on Debian/Proxmox hosts. Agents keep no Wazuh apt repo:
+# the repo and key are added only for a fresh install, then removed, so apt can never upgrade
+# the agent past the manager. Agent upgrades are pushed from the manager (WPK), not by this playbook.
+# Run from the repo root as the admin account:
 #   ansible-playbook playbooks/wazuh-agent.yml -e ansible_user=admin \
 #     -e 'ansible_host={{ inventory_hostname }}-admin' -K
 # Single host first:  add  -l <host>
-# Agent upgrade: upgrade the manager first, then bump wazuh_agent_version and rerun.
+# The enrollment password is only used on a fresh install; on hosts that already have the agent,
+# press Enter at the prompt.
+# wazuh_agent_version only applies to fresh installs. Keep it <= the manager version; if it lags,
+# the new agent is simply upgraded from the manager afterwards.
 #
 # Docker listener dependency only (second play), without touching the agent install:
 #   ansible-playbook playbooks/wazuh-agent.yml --tags docker_listener -l apps,dmz,mgmt-services,wazuh \
@@ -21,62 +26,88 @@
 
   vars_prompt:
     - name: wazuh_registration_password
-      prompt: "Wazuh enrollment password"
+      prompt: "Wazuh enrollment password (fresh installs only; press Enter otherwise)"
       private: true
 
   vars:
-    wazuh_agent_version: "<pinned-version>"     # must be <= manager version; full Debian version incl. revision
+    wazuh_agent_version: "<pinned-version>"     # fresh installs only; must be <= manager version; full Debian version incl. -1 revision
     wazuh_manager: "10.0.99.8"
     wazuh_key_sha256: "<sha256-of-wazuh-gpg-key>"
     wazuh_agent_groups: >-
       {{ (['default'] + (group_names | intersect(['proxmox', 'debian_fleet', 'backup']))) | join(',') }}
 
   tasks:
-    - name: Ensure /etc/apt/keyrings exists
+    - name: Gather installed packages
+      package_facts:
+        manager: apt
+
+    - name: Record whether this is a fresh install
+      set_fact:
+        wazuh_fresh_install: "{{ 'wazuh-agent' not in ansible_facts.packages }}"
+
+    - name: Fresh install (temporary repo, pinned agent)
+      when: wazuh_fresh_install | bool
+      block:
+        - name: Ensure /etc/apt/keyrings exists
+          file:
+            path: /etc/apt/keyrings
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Install Wazuh repo key (checksum-pinned, removed again below)
+          get_url:
+            url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+            dest: /etc/apt/keyrings/wazuh.asc
+            checksum: "sha256:{{ wazuh_key_sha256 }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Add Wazuh apt repository (removed again below)
+          copy:
+            dest: /etc/apt/sources.list.d/wazuh.sources
+            owner: root
+            group: root
+            mode: "0644"
+            content: |
+              Types: deb
+              URIs: https://packages.wazuh.com/4.x/apt/
+              Suites: stable
+              Components: main
+              Signed-By: /etc/apt/keyrings/wazuh.asc
+
+        - name: Install pinned Wazuh agent (deployment vars enroll on first install)
+          apt:
+            name: "wazuh-agent={{ wazuh_agent_version }}"
+            update_cache: true
+          environment:
+            WAZUH_MANAGER: "{{ wazuh_manager }}"
+            WAZUH_AGENT_NAME: "{{ inventory_hostname }}"
+            WAZUH_AGENT_GROUP: "{{ wazuh_agent_groups }}"
+            WAZUH_REGISTRATION_PASSWORD: "{{ wazuh_registration_password }}"
+
+    - name: Remove Wazuh apt repository (upgrades come from the manager)
       file:
-        path: /etc/apt/keyrings
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
+        path: /etc/apt/sources.list.d/wazuh.sources
+        state: absent
+      register: wazuh_repo_removed
 
-    - name: Install Wazuh repo key (checksum-pinned)
-      get_url:
-        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
-        dest: /etc/apt/keyrings/wazuh.asc
-        checksum: "sha256:{{ wazuh_key_sha256 }}"
-        owner: root
-        group: root
-        mode: "0644"
+    - name: Remove Wazuh repo key
+      file:
+        path: /etc/apt/keyrings/wazuh.asc
+        state: absent
 
-    - name: Add Wazuh apt repository
-      copy:
-        dest: /etc/apt/sources.list.d/wazuh.sources
-        owner: root
-        group: root
-        mode: "0644"
-        content: |
-          Types: deb
-          URIs: https://packages.wazuh.com/4.x/apt/
-          Suites: stable
-          Components: main
-          Signed-By: /etc/apt/keyrings/wazuh.asc
-
-    - name: Install pinned Wazuh agent (deployment vars enroll on first install)
+    - name: Refresh apt cache after repo removal
       apt:
-        name: "wazuh-agent={{ wazuh_agent_version }}"
         update_cache: true
-        allow_change_held_packages: true
-      environment:
-        WAZUH_MANAGER: "{{ wazuh_manager }}"
-        WAZUH_AGENT_NAME: "{{ inventory_hostname }}"
-        WAZUH_AGENT_GROUP: "{{ wazuh_agent_groups }}"
-        WAZUH_REGISTRATION_PASSWORD: "{{ wazuh_registration_password }}"
+      when: wazuh_repo_removed.changed
 
-    - name: Hold wazuh-agent at the pinned version
+    - name: Release any hold on wazuh-agent (no repo, so nothing for apt to upgrade)
       dpkg_selections:
         name: wazuh-agent
-        selection: hold
+        selection: install
 
     - name: Enable and start wazuh-agent
       systemd_service:

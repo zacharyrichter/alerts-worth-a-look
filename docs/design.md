@@ -87,7 +87,7 @@ The manager's own state (`etc`, including the agent registry and `local_rules.xm
 
 ### Updates
 
-The three images are grouped into one Renovate pull request, held to the current major release until a deliberate migration, with a minimum release age. Merges never auto-deploy, since the stack is critical. Agents are upgraded separately and must never be newer than the manager ([`agents.md`](agents.md)).
+The three images are grouped into one Renovate pull request, held to the current major release until a deliberate migration, with a minimum release age. Merges never auto-deploy, since the stack is critical. Agents are upgraded separately, from the manager, and must never be newer than it ([`agents.md`](agents.md)).
 
 ## Sign-in
 
