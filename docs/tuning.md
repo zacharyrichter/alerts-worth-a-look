@@ -17,6 +17,13 @@ Custom rules live in the manager's `etc/rules/local_rules.xml`, edited in the da
 | 100115 | 87701 firewall block | 0 | Ignore IP cameras probing their gateway on UDP 21065 |
 | 100116 | 87701 firewall block | 0 | Ignore a phone app's local control attempts on a smart plug (blocked by policy; the app falls back to the cloud) |
 | 100120 | 80710 auditd promisc | 3 | Promiscuous mode on bridge ports (Docker `veth<hex>`, LXC `veth<vmid>i<n>`, VM `tap<vmid>i<n>`, Proxmox `fwln`, `fwbr<vmid>i<n>`, `fwpr<vmid>p<n>`). Real NICs (`ens*`, `eth*`, `eno*`, `vmbr*`) still alert at 10 |
+| 100130 | 80700 auditd | 3 | Laptop: denied file operations by a logged-in user (`ws-unsuccessful-*`) |
+| 100131 | 80700 auditd | 3 | Laptop: routine activity kept on record (installers, module load and unload, logins, sessions, time changes, network config) |
+| 100132 | 80700 auditd | 3 | Laptop: running as another user (`sudo`, `pkexec`, `systemd-run`) |
+| 100133 | 80700 auditd | 5 | Laptop: host identity and banner changes, reads of the audit log |
+| 100134 | 80700 auditd | 7 | Laptop: auth stack, accounts, sudoers, SELinux policy, root touching user homes |
+| 100135 | 100134 | 3 | Laptop: routine sources of 100134 (password checks at unlock and `sudo`, `auditctl`) |
+| 100136 | 100134 | 3 | Laptop: root touching a user-owned file via Python (an Ansible run) |
 | 100140 to 100170 | | 10 and 0 | The sources raised to level 10 and the Docker allowlist ([`sources.md`](sources.md)) |
 | 100180 | 23505, 23506 vulnerability | 7 | Kernel package vulnerabilities, dashboard only ([`sources.md`](sources.md)) |
 
@@ -27,6 +34,16 @@ Rule 87702 (level 10) still fires for repeated blocks from internal sources: a h
 The stock rule 87702 is a frequency rule: it counts blocks (87701) from one source and goes to level 10. External scanners would reach level 10 constantly. The obvious fix is a child rule of 87702, but that never runs, because frequency rules don't evaluate `if_sid` children.
 
 So the split happens one level lower. 100112 takes external-source blocks at the single-block level and ends them there (`no_log`), so 87702 never counts them. 100113 then watches that quieter stream with its own frequency, at level 5, so scanning is visible without being pushed.
+
+## Laptop audit keys
+
+The laptop's audit rules carry a `ws-` prefix on every key. Wazuh's stock auditd rules only know the `audit-wazuh-*` keys, so without a rule of its own an event with a `ws-` key stops at the parent rule 80700 (level 0) and is never kept. The prefix also keeps these rules from matching the Debian fleet, which uses some of the same key names.
+
+Rules 100130 to 100136 raise those events to levels 3 to 7. None reaches 10, so nothing is sent to ntfy: the laptop roams and is used interactively, so its routine activity is recorded for the dashboard and for a review after an incident, not pushed. The two child rules (100135, 100136) drop the routine sources of level 7, because they would otherwise fire on every screen unlock, `sudo` password check and Ansible run.
+
+Two things follow from the design. A key that isn't in the lists above never gets a rule, so a new audit key needs a rule added here. The rules are children of 80700, not frequency rules, so they can be tested by hand with `wazuh-logtest`.
+
+The audit rules and their keys are in the laptop's baseline playbook in [assume-it-walks](https://github.com/zacharyrichter/assume-it-walks).
 
 ## File-integrity ignores
 

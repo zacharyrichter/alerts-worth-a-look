@@ -87,6 +87,66 @@
   </rule>
 </group>
 
+<!-- Laptop audit keys (ws- prefix, set by the laptop's baseline playbook; the Debian fleet's keys never
+     match). Wazuh's stock audit rules only know the audit-wazuh-* keys, so events with these keys
+     stopped at 80700 (level 0). All levels stay below 10, so nothing reaches ntfy. -->
+<group name="local,audit,audit_fedora,">
+
+  <!-- Failed file operations by a logged-in user (OSPP *-failed rules) -->
+  <rule id="100130" level="3">
+    <if_sid>80700</if_sid>
+    <field name="audit.key" type="pcre2">^ws-unsuccessful-(access|create|modification|delete|perm-change|owner-change)$</field>
+    <description>Auditd: denied file operation ($(audit.key)) by $(audit.auid): $(audit.file.name)</description>
+    <group>audit_failed_access,</group>
+  </rule>
+
+  <!-- Routine activity worth keeping a record of -->
+  <rule id="100131" level="3">
+    <if_sid>80700</if_sid>
+    <field name="audit.key" type="pcre2">^ws-(software-installer|module-load|module-unload|kernel_modules|logins|session|time-change|network-config)$</field>
+    <description>Auditd: $(audit.key) event ($(audit.exe))</description>
+  </rule>
+
+  <!-- Running as another user: sudo, pkexec, systemd-run -->
+  <rule id="100132" level="3">
+    <if_sid>80700</if_sid>
+    <field name="audit.key" type="pcre2">^ws-(user_emulation|maybe-escalation)$</field>
+    <description>Auditd: privilege change via $(audit.exe) by $(audit.auid)</description>
+    <group>audit_privilege,</group>
+  </rule>
+
+  <!-- Host identity, banners, audit log reads -->
+  <rule id="100133" level="5">
+    <if_sid>80700</if_sid>
+    <field name="audit.key" type="pcre2">^ws-(system-locale|access-audit-trail)$</field>
+    <description>Auditd: $(audit.key) event ($(audit.exe))</description>
+  </rule>
+
+  <!-- Auth, accounts, sudoers, SELinux policy, root touching user homes -->
+  <rule id="100134" level="7">
+    <if_sid>80700</if_sid>
+    <field name="audit.key" type="pcre2">^ws-(identity|user-modify|group-modify|special-config-changes|MAC-policy|power-abuse)$</field>
+    <description>Auditd: security-relevant change ($(audit.key)) via $(audit.exe)</description>
+    <group>audit_config_change,</group>
+  </rule>
+
+  <!-- Routine sources of the level-7 keys: password checks (screen unlock, sudo),
+       audit admin commands, and Ansible runs as root touching the deploy directory -->
+  <rule id="100135" level="3">
+    <if_sid>100134</if_sid>
+    <field name="audit.exe" type="pcre2">^/usr/(s)?bin/(unix_chkpwd|auditctl)$</field>
+    <description>Auditd: routine $(audit.key) via $(audit.exe)</description>
+  </rule>
+
+  <rule id="100136" level="3">
+    <if_sid>100134</if_sid>
+    <field name="audit.key">^ws-power-abuse$</field>
+    <field name="audit.exe" type="pcre2">^/usr/bin/python3</field>
+    <description>Auditd: root touched a user-owned file via python (Ansible run)</description>
+  </rule>
+
+</group>
+
 <!-- Suricata (OPNsense IDS, eve.json via the router agent). Stock rule 86601 puts every
      alert at level 3; only ET severity 1 (trojan, C2 and similar) is raised to level 10
      so it reaches ntfy. Severity 2 and 3 stay at level 3 for the dashboard. -->
