@@ -1,0 +1,116 @@
+---
+# Install, pin and enroll the Wazuh agent on Debian/Proxmox hosts.
+# Run from the repo root:
+#   ansible-playbook playbooks/wazuh-agent.yml -e ansible_user=admin \
+#     -e 'ansible_host={{ inventory_hostname }}-admin' -K
+# Single host first:  add  -l <host>
+# Agent upgrade: upgrade the manager first, then bump wazuh_agent_version and rerun.
+#
+# Docker listener dependency only (second play), without touching the agent install:
+#   ansible-playbook playbooks/wazuh-agent.yml --tags docker_listener -l apps,dmz,mgmt-services,wazuh \
+#     -e ansible_user=admin -e 'ansible_host={{ inventory_hostname }}-admin' -K
+#   The -l limit keeps play 1 from connecting (gathering facts) on the non-Docker hosts.
+#   The enrollment password prompt still appears (vars_prompt ignores tags); press Enter,
+#   it is unused when the agent play is skipped.
+#   The docker-hosts agent group (docker-listener wodle) is assigned in the Wazuh dashboard;
+#   install python3-docker BEFORE adding a host to that group.
+
+- name: Deploy Wazuh agent
+  hosts: proxmox:debian_fleet:backup:!bastion   # bastion holds the CA and is installed by hand
+  become: true
+
+  vars_prompt:
+    - name: wazuh_registration_password
+      prompt: "Wazuh enrollment password"
+      private: true
+
+  vars:
+    wazuh_agent_version: "<pinned-version>"     # must be <= manager version; full Debian version incl. revision
+    wazuh_manager: "10.0.99.8"
+    wazuh_key_sha256: "<sha256-of-wazuh-gpg-key>"
+    wazuh_agent_groups: >-
+      {{ (['default'] + (group_names | intersect(['proxmox', 'debian_fleet', 'backup']))) | join(',') }}
+
+  tasks:
+    - name: Ensure /etc/apt/keyrings exists
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Install Wazuh repo key (checksum-pinned)
+      get_url:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        dest: /etc/apt/keyrings/wazuh.asc
+        checksum: "sha256:{{ wazuh_key_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Add Wazuh apt repository
+      copy:
+        dest: /etc/apt/sources.list.d/wazuh.sources
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: https://packages.wazuh.com/4.x/apt/
+          Suites: stable
+          Components: main
+          Signed-By: /etc/apt/keyrings/wazuh.asc
+
+    - name: Install pinned Wazuh agent (deployment vars enroll on first install)
+      apt:
+        name: "wazuh-agent={{ wazuh_agent_version }}"
+        update_cache: true
+        allow_change_held_packages: true
+      environment:
+        WAZUH_MANAGER: "{{ wazuh_manager }}"
+        WAZUH_AGENT_NAME: "{{ inventory_hostname }}"
+        WAZUH_AGENT_GROUP: "{{ wazuh_agent_groups }}"
+        WAZUH_REGISTRATION_PASSWORD: "{{ wazuh_registration_password }}"
+
+    - name: Hold wazuh-agent at the pinned version
+      dpkg_selections:
+        name: wazuh-agent
+        selection: hold
+
+    - name: Enable and start wazuh-agent
+      systemd_service:
+        name: wazuh-agent
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for agent to report connected
+      command: grep -q "^status='connected'" /var/ossec/var/run/wazuh-agentd.state
+      register: agent_state
+      retries: 12
+      delay: 5
+      until: agent_state.rc == 0
+      changed_when: false
+
+    - name: Remove enrollment password (only needed to enroll; runs after the connected check)
+      file:
+        path: /var/ossec/etc/authd.pass
+        state: absent
+
+- name: Wazuh Docker listener dependency (Docker hosts only)
+  hosts: apps:dmz:mgmt-services:wazuh
+  become: true
+  tags: [docker_listener]
+
+  tasks:
+    - name: Install python3-docker (Debian package, used by the docker-listener wodle)
+      apt:
+        name: python3-docker
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Verify python3-docker can reach the Docker API as root (skipped in --check)
+      command: python3 -c "import docker; docker.from_env().ping()"
+      changed_when: false

@@ -1,0 +1,82 @@
+#!/var/ossec/framework/python/bin/python3
+# custom-ntfy: Wazuh integratord -> ntfy
+# Args from integratord: <alert_file> <api_key (unused)> <hook_url>
+import datetime
+import json
+import ssl
+import sys
+import urllib.request
+
+try:
+    import certifi
+    SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    SSL_CTX = ssl.create_default_context()
+
+TOKEN_FILE = "/var/ossec/etc/ntfy.token"
+LOG_FILE = "/var/ossec/logs/integrations.log"
+TIMEOUT = 10
+
+
+def log(msg):
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(f"{datetime.datetime.now():%Y/%m/%d %H:%M:%S} custom-ntfy: {msg}\n")
+    except OSError:
+        pass
+
+
+def hdr(s, limit=200):
+    # HTTP headers must be single-line latin-1
+    s = " ".join(str(s).split())[:limit]
+    return s.encode("latin-1", "replace").decode("latin-1")
+
+
+def main():
+    if len(sys.argv) < 4:
+        log(f"bad args: {sys.argv[1:]}")
+        return 1
+    alert_file, hook_url = sys.argv[1], sys.argv[3]
+
+    with open(alert_file) as f:
+        alert = json.load(f)
+    with open(TOKEN_FILE) as f:
+        token = f.read().strip()
+
+    rule = alert.get("rule", {})
+    agent = alert.get("agent", {})
+    level = int(rule.get("level", 0))
+
+    title = f"[{agent.get('name', '?')}] {rule.get('description', 'Wazuh alert')}"
+    body = (
+        f"Level {level} | rule {rule.get('id', '?')}\n"
+        f"Agent: {agent.get('name', '?')} ({agent.get('ip', '-')})\n"
+        f"Groups: {', '.join(rule.get('groups', []))}\n"
+    )
+    full_log = alert.get("full_log")
+    if full_log:
+        body += f"\n{full_log[:1500]}"
+
+    req = urllib.request.Request(
+        hook_url,
+        data=body.encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Title": hdr(title),
+            "Priority": "5" if level >= 12 else "4",
+            "Tags": "rotating_light" if level >= 12 else "warning",
+            "Click": "https://wazuh.example.net",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT, context=SSL_CTX) as r:
+            log(f"sent rule {rule.get('id')} level {level} -> HTTP {r.status}")
+    except Exception as e:
+        log(f"send failed for rule {rule.get('id')}: {e}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

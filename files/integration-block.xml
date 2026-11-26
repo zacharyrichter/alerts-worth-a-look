@@ -1,0 +1,6 @@
+<integration>
+  <name>custom-ntfy</name>
+  <hook_url>https://ntfy.example.net/wazuh-alerts</hook_url>
+  <level>10</level>
+  <alert_format>json</alert_format>
+</integration>

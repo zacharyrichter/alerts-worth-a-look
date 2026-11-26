@@ -1,0 +1,12 @@
+<agent_config os="Linux">
+  <!-- Critical-file FIM: real-time (inotify, no auditd/whodata) on top of the stock
+       12-hour scan of /etc and the binary directories. Changes here are raised to
+       level 10 by local rule 100170. ntfy-sendmail.env holds a token, so there is no
+       report_changes (no diffs) there or on .ssh. -->
+  <syscheck>
+    <directories realtime="yes" check_all="yes" report_changes="yes">/etc/ssh/sshd_config,/etc/ssh/sshd_config.d,/etc/ssh/ca,/etc/ssh/ssh_host_ed25519_key-cert.pub</directories>
+    <directories realtime="yes" check_all="yes" report_changes="yes">/etc/sudoers,/etc/sudoers.d</directories>
+    <directories realtime="yes" check_all="yes">/root/.ssh,/home/*/.ssh</directories>
+    <directories realtime="yes" check_all="yes">/etc/ntfy-sendmail.env</directories>
+  </syscheck>
+</agent_config>

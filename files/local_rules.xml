@@ -1,0 +1,234 @@
+<!-- Custom rules. Edited in the dashboard (Server management > Rules > Manage rules files >
+     Custom rules); this is the reference copy. The stock example block is omitted. -->
+
+<!-- Rootcheck false positives -->
+<group name="rootcheck,local,">
+
+  <rule id="100100" level="0">
+    <if_sid>510</if_sid>
+    <match>^File '/dev/.lxc</match>
+    <description>Ignore LXC runtime files in /dev (LXCFS, Proxmox containers)</description>
+  </rule>
+
+  <rule id="100101" level="0">
+    <if_sid>510</if_sid>
+    <match>^Files hidden inside directory '/boot/efi</match>
+    <description>Ignore link-count check on FAT EFI partition (FAT has no hard links)</description>
+    <group>rootcheck,</group>
+  </rule>
+
+</group>
+
+<!-- OPNsense firewall tuning -->
+<group name="firewall,local,">
+
+  <!-- External sources: split off at the single-block level so they never feed 87702 (level 10).
+       A rule that is a child of 87702 never runs: frequency rules don't evaluate if_sid children. -->
+  <rule id="100112" level="5">
+    <if_sid>87701</if_sid>
+    <srcip negate="yes">10.0.0.0/16</srcip>
+    <options>no_log</options>
+    <description>Firewall block from external source.</description>
+    <group>firewall_block,</group>
+  </rule>
+
+  <rule id="100113" level="5" frequency="18" timeframe="45" ignore="240">
+    <if_matched_sid>100112</if_matched_sid>
+    <same_source_ip />
+    <description>Repeated firewall blocks from external source (internet scanning).</description>
+    <group>multiple_blocks,</group>
+  </rule>
+
+  <rule id="100111" level="0">
+    <if_sid>87701</if_sid>
+    <srcip>10.0.0.0/16</srcip>
+    <regex type="pcre2">,tcp,\d+,[\d.]+,[\d.]+,\d+,\d+,\d+,(FA|FPA|RA),</regex>
+    <description>Ignore internal out-of-state TCP teardown blocks (FIN/RST after state expiry).</description>
+    <group>firewall,</group>
+  </rule>
+
+  <!-- Internal broadcast traffic dropped at the router (device discovery chatter). -->
+  <rule id="100114" level="0">
+    <if_sid>87701</if_sid>
+    <srcip>10.0.0.0/16</srcip>
+    <regex type="pcre2">,10\.0\.\d+\.\d+,(10\.0\.\d+\.255|255\.255\.255\.255),</regex>
+    <description>Ignore internal broadcast blocks (device discovery).</description>
+  </rule>
+
+  <!-- IP cameras probe their gateway on UDP 21065; blocked by design. -->
+  <rule id="100115" level="0">
+    <if_sid>87701</if_sid>
+    <srcip>10.0.40.0/24</srcip>
+    <dstip>10.0.40.1</dstip>
+    <dstport>21065</dstport>
+    <description>Ignore camera gateway probes (UDP 21065) on the camera network.</description>
+  </rule>
+
+  <!-- A phone app tries local control of a smart plug on the IoT network (blocked by policy;
+       the app falls back to the vendor's cloud). -->
+  <rule id="100116" level="0">
+    <if_sid>87701</if_sid>
+    <srcip>10.0.10.0/24</srcip>
+    <dstip>10.0.20.111</dstip>
+    <dstport>80</dstport>
+    <description>Ignore user-to-smart-plug local control attempts (blocked by policy).</description>
+  </rule>
+
+</group>
+
+<group name="local,audit,">
+  <!-- 80710 on bridge ports is expected: Docker veth<hex>, LXC veth<vmid>i<n>,
+       VM tap<vmid>i<n>, Proxmox firewall fwln/fwbr<vmid>i<n> and fwpr<vmid>p<n>.
+       Promiscuous mode on a real NIC (ens*, eth*, eno*, vmbr*) still alerts at level 10. -->
+  <rule id="100120" level="3">
+    <if_sid>80710</if_sid>
+    <field name="audit.dev" type="pcre2">^(veth|tap\d+i\d+|fw(ln|br)\d+i\d+|fwpr\d+p\d+)</field>
+    <description>Auditd: bridge port entered promiscuous mode (container/VM start, expected).</description>
+  </rule>
+</group>
+
+<!-- Suricata (OPNsense IDS, eve.json via the router agent). Stock rule 86601 puts every
+     alert at level 3; only ET severity 1 (trojan, C2 and similar) is raised to level 10
+     so it reaches ntfy. Severity 2 and 3 stay at level 3 for the dashboard. -->
+<group name="local,suricata,">
+
+  <rule id="100140" level="10">
+    <if_sid>86601</if_sid>
+    <field name="alert.severity">^1$</field>
+    <description>Suricata high-severity alert: $(alert.signature)</description>
+    <group>ids,</group>
+  </rule>
+
+</group>
+
+<!-- Docker exec monitoring (docker-listener wodle, docker-hosts agent group).
+     Every exec into a container is raised to level 10 (ntfy). Healthchecks also run as exec,
+     so each known healthcheck command is matched EXACTLY (\Q...\E literal, anchored) and dropped
+     to level 0, which also keeps them out of the index.
+     100150 hangs off both 87907 (exec) and 87908 (stock shell-session child, level 5) so a
+     plain "docker exec -it x sh" also reaches level 10.
+     Match on docker.Action: current Docker no longer sends the deprecated "status" field.
+     A new or changed healthcheck (new app, healthcheck edited in compose) alerts on every
+     interval until its exact docker.Action string is added below.
+     The rules below are examples, one per healthcheck style; the live file has one per
+     healthcheck in the fleet. -->
+<group name="local,docker,">
+
+  <rule id="100150" level="10">
+    <if_sid>87907, 87908</if_sid>
+    <description>Docker: command executed in container $(docker.Actor.Attributes.name): $(docker.Action)</description>
+    <group>docker_exec,</group>
+  </rule>
+
+  <!-- postgres container; $ is written \x24 so it is not read as a rule variable -->
+  <rule id="100151" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: /bin/sh -c pg_isready -d \E\x24\Q{POSTGRES_DB} -U \E\x24\Q{POSTGRES_USER}\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- identity server and worker -->
+  <rule id="100152" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: ak healthcheck\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- dashboard container: wget spider with a $ variable -->
+  <rule id="100153" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: /bin/sh -c wget --no-verbose --tries=1 --spider -Y off http://127.0.0.1:\E\x24\QPORT/api/healthcheck || exit 1\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- TCP probe; > is written \x3e -->
+  <rule id="100154" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: /bin/sh -c timeout 5s bash -c ':\E\x3e\Q /dev/tcp/127.0.0.1/8080' || exit 1\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- key-value store -->
+  <rule id="100155" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: valkey-cli ping\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- node app: => is written =\E\x3e\Q -->
+  <rule id="100156" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: node -e fetch('http://127.0.0.1:3000/api/health').then((r) =\E\x3e\Q { if (!r.ok) process.exit(1); }).catch(() =\E\x3e\Q process.exit(1));\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- database container -->
+  <rule id="100157" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: /usr/local/bin/healthcheck.sh --connect --mariadbupgrade --innodb_initialized\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- traefik bouncer (the trailing space is part of the action) -->
+  <rule id="100158" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: /healthchecker \E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- identity outpost -->
+  <rule id="100159" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: /authentik healthcheck proxy\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- monitoring agent: & is written \x26 -->
+  <rule id="100160" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Action" type="pcre2">^\Qexec_start: /bin/sh -c [ -x /docker-healthcheck.sh ] \E\x26\x26\Q /docker-healthcheck.sh || wget --quiet --tries=1 --spider http://localhost:7655/api/health\E$</field>
+    <description>Docker: known healthcheck exec (ignored)</description>
+  </rule>
+
+  <!-- Gitea Actions job containers (act_runner, e.g. Renovate). The runner execs every
+       workflow step into the job container, with commands that change per action and run,
+       so these are matched by container name instead of command. Containers are ephemeral;
+       creating one still logs at stock level 3 (87901). -->
+  <rule id="100161" level="0">
+    <if_sid>100150</if_sid>
+    <field name="docker.Actor.Attributes.name" type="pcre2">^GITEA-ACTIONS-TASK-</field>
+    <description>Docker: Gitea Actions workflow step exec (ignored)</description>
+  </rule>
+
+</group>
+
+<!-- Critical-file FIM (default group agent.conf, real-time). Stock FIM alerts are level 7
+     (modified/deleted) and 5 (added), below ntfy; changes to these paths go to level 10.
+     known_hosts is excluded (changes on normal outbound SSH, not an intrusion signal). -->
+<group name="local,syscheck,">
+
+  <rule id="100170" level="10">
+    <if_sid>550, 553, 554</if_sid>
+    <field name="file" type="pcre2">^(/etc/ssh/sshd_config|/etc/ssh/ca/|/etc/ssh/ssh_host_ed25519_key-cert\.pub|/etc/sudoers|/root/\.ssh/(?!known_hosts)|/home/[^/]+/\.ssh/(?!known_hosts)|/etc/ntfy-sendmail\.env)</field>
+    <description>FIM: critical file changed: $(file)</description>
+    <group>fim_critical,</group>
+  </rule>
+
+</group>
+
+<!-- Kernel vulnerability alerts (vulnerability-detector). Stock 23505 (level 10) and 23506
+     (level 13) fire once per open CVE on every host each time a kernel package changes, which
+     is a push per CVE for CVEs Debian hasn't fixed yet. Kernel package alerts are dropped to
+     level 7: still indexed and visible in the dashboard, below ntfy (10).
+     Exposure is handled by policy instead (unattended-upgrades with reboot, unused kernel
+     modules blocked). Non-kernel packages still alert at stock level. -->
+<group name="local,vulnerability-detector,">
+
+  <rule id="100180" level="7">
+    <if_sid>23505, 23506</if_sid>
+    <field name="vulnerability.package.name" type="pcre2">^linux-image-</field>
+    <description>Kernel vulnerability $(vulnerability.cve) affects $(vulnerability.package.name) (dashboard only)</description>
+    <group>vulnerability_kernel,</group>
+  </rule>
+
+</group>
